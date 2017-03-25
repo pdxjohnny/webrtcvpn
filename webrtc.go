@@ -11,10 +11,17 @@ import (
 	"bufio"
 	"encoding/json"
 	"github.com/keroserene/go-webrtc"
+	"io/ioutil"
 	"log"
 	"os"
 	"os/signal"
+	"os/user"
+	"path"
 	"strings"
+)
+
+const (
+	PKG_NAME = "webrtcvpn"
 )
 
 var pc *webrtc.PeerConnection
@@ -80,6 +87,19 @@ func receiveDescription(sdp *webrtc.SessionDescription) {
 func signalSend(msg string) {
 	log.Println("\n ---- Please copy the below to peer ---- \n")
 	log.Println(msg + "\n")
+
+	u, err := user.Current()
+	if err != nil {
+		log.Fatal(err)
+	}
+	err = ioutil.WriteFile(
+		path.Join(u.HomeDir, "."+PKG_NAME+"-send-to-peer"),
+		[]byte(msg),
+		0400,
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
 }
 
 func signalReceive(msg string) {
