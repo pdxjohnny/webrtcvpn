@@ -10,7 +10,6 @@ package main
 import (
 	"bufio"
 	"encoding/json"
-	"github.com/keroserene/go-webrtc"
 	"io/ioutil"
 	"log"
 	"os"
@@ -18,6 +17,8 @@ import (
 	"os/user"
 	"path"
 	"strings"
+
+	"github.com/keroserene/go-webrtc"
 )
 
 const (
