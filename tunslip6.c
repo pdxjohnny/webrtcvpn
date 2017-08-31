@@ -183,7 +183,6 @@ int main(int argc, char **argv) {
   char buf[buf_size];
   fd_set rset;
   FILE *inslip;
-  struct process child;
 
   // Fill interface_name with the string "tun0"
   memset(interface_name, 0, sizeof(*interface_name) * sizeof(interface_name));
@@ -196,14 +195,11 @@ int main(int argc, char **argv) {
   }
   ipaddr = argv[1];
 
-  // Create a the child comms process
-  child = drop_privs_and_exec_comms(&argv[2]);
-
   // Bring up the TUN interface
   interface_fd = open_tun(interface_name);
   if (interface_fd == -1) {
     perror("Failed to create TUN interface");
-    goto error;
+    return EXIT_FAILURE;
   }
   dprintf(STDERR_FILENO, "Opened \'/dev/%s\'\n", interface_name);
 
@@ -219,68 +215,39 @@ int main(int argc, char **argv) {
   // Configure the interface
   ifconf();
 
-  // Send data from the child to the interface and vi sa versa
-  while (1) {
-    FD_ZERO(&rset);
+  /* The other ends of the pipes become the child's stdin and stdout */
+  printf("tun is fd: %d\n", interface_fd);
+  // if (dup2(interface_fd, STDOUT_FILENO) == -1) {
+  // if (dup2(interface_fd, STDIN_FILENO) == -1) {
+  //   perror("dup2 of interface_fd to STDIN_FILENO failed");
+  //   exit(errno);
+  // }
 
-    FD_SET(interface_fd, &rset);
-    FD_SET(child.stdout, &rset);
-
-    ret = select(interface_fd + 1, &rset, NULL, NULL, NULL);
-    if (ret == -1 && errno != EINTR) {
-      perror("Error selecting from TUN and child.stdout");
-      goto error;
-    } else if (ret > 0) {
-      // TUN to Child
-      if (FD_ISSET(interface_fd, &rset)) {
-        if ((n = read(interface_fd, buf, buf_size)) != -1) {
-          printf("TUN -> child\n");
-          hexdump(debugfd, buf, n); // XXX
-          if (write(child.stdin, buf, n) != n) {
-            perror("Error writing from TUN to child");
-            goto error;
-          }
-        } else {
-          perror("Error reading from TUN");
-          goto error;
-        }
-      }
-
-      // Child to TUN
-      if (FD_ISSET(child.stdout, &rset)) {
-        if ((n = read(child.stdout, buf, buf_size)) != -1) {
-          printf("child -> TUN\n");
-          hexdump(debugfd, buf, n); // XXX
-          if (write(interface_fd, buf, n) != n) {
-            perror("Error writing from child to TUN");
-            goto error;
-          }
-        } else {
-          perror("Error reading from child");
-          goto error;
-        }
-      }
-    }
+  /* Relinquishing privileges from:
+   * https://www.securecoding.cert.org/confluence/display/c/POS36-C.+Observe+correct+revocation+order+while+relinquishing+privileges
+   */
+  /*  Drop superuser privileges in correct order */
+  if (setgid(getgid()) == -1) {
+    perror("setgid failed");
+    exit(errno);
   }
-  ret = EXIT_SUCCESS;
-
-error:
-  ret = EXIT_FAILURE;
-
-stop_child:
-  if (waitpid(child.pid, &status, WNOHANG) == -1) {
-    perror("Error waiting on child");
-    return ret;
+  if (setuid(getuid()) == -1) {
+    perror("setuid failed");
+    exit(errno);
   }
-  if (!WIFEXITED(status)) {
-    if (kill(child.pid, SIGTERM) == -1) {
-      perror("Error sending SIGTERM to child");
-      return ret;
-    }
-    if (waitpid(child.pid, &status, 0) == -1) {
-      perror("Error waiting on child forever");
-      return ret;
-    }
+  /*
+   * Not possible to regain group privileges due to correct relinquishment
+   * order
+   */
+
+  /* Exec the child process which will deal with the packets */
+  dprintf(STDERR_FILENO, "Using \'%s\' for comms\n", argv[2]);
+  if (execvp(argv[2], &argv[2]) == -1) {
+    dup2(STDERR_FILENO, STDOUT_FILENO);
+    perror("execvp failed");
+    exit(errno);
   }
-  return WEXITSTATUS(status);
+
+  perror("WTF happened");
+  exit(1);
 }

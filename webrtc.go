@@ -268,13 +268,10 @@ func main() {
 	mode = ModeInit
 	reader := bufio.NewReader(os.Stdin)
 
-	f, err := os.OpenFile("go-webrtc-logfile", os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0600)
-	if err != nil {
-		log.Fatalf("error opening file: %v", err)
+	tun := os.NewFile(3, "tun")
+	if tun == nil {
+		log.Fatal("Failed to use file descriptor 3 for TUN")
 	}
-	defer f.Close()
-
-	log.SetOutput(f)
 
 	wait := make(chan int, 1)
 	log.Println("=== go-webrtc chat demo ===")
