@@ -103,7 +103,7 @@ func signalSend(msg string) {
 	}
 }
 
-func signalReceive(msg string) {
+func signalReceive(msg string, onMessage chan []byte) {
 	var parsed map[string]interface{}
 	err = json.Unmarshal([]byte(msg), &parsed)
 	if nil != err {
@@ -114,7 +114,7 @@ func signalReceive(msg string) {
 	// If this is a valid signal and no PeerConnection has been instantiated,
 	// start as the "answerer."
 	if nil == pc {
-		start(false)
+		start(false, onMessage)
 	}
 
 	if nil != parsed["sdp"] {
@@ -143,7 +143,7 @@ func signalReceive(msg string) {
 // In this demo, only one data channel is expected, and is only used for chat.
 // But it is possible to send any sort of bytes over a data channel, for many
 // more interesting purposes.
-func prepareDataChannel(channel *webrtc.DataChannel) {
+func prepareDataChannel(channel *webrtc.DataChannel, onMessage chan []byte) {
 	channel.OnOpen = func() {
 		log.Println("Data Channel Opened!")
 		startChat()
@@ -153,7 +153,7 @@ func prepareDataChannel(channel *webrtc.DataChannel) {
 		endChat()
 	}
 	channel.OnMessage = func(msg []byte) {
-		receiveChat(string(msg))
+		onMessage <- msg
 	}
 }
 
@@ -171,10 +171,6 @@ func sendChat(msg string) {
 	line := username + ": " + msg
 	log.Println("[sent]")
 	dc.Send([]byte(line))
-}
-
-func receiveChat(msg string) {
-	log.Println("\n" + string(msg))
 }
 
 // Janky /command inputs.
@@ -209,7 +205,7 @@ func showCommands() {
 // negotiation-needed, leading to preparing an SDP offer to be sent to the
 // remote peer. Otherwise, await an SDP offer from the remote peer, and send an
 // answer back.
-func start(instigator bool) {
+func start(instigator bool, onMessage chan []byte) {
 	mode = ModeConnect
 	log.Println("Starting up PeerConnection...")
 	// TODO: Try with TURN servers.
@@ -248,7 +244,7 @@ func start(instigator bool) {
 	pc.OnDataChannel = func(channel *webrtc.DataChannel) {
 		log.Println("Datachannel established by remote... ", channel.Label())
 		dc = channel
-		prepareDataChannel(channel)
+		prepareDataChannel(channel, onMessage)
 	}
 
 	if instigator {
@@ -259,7 +255,7 @@ func start(instigator bool) {
 			log.Println("Unexpected failure creating Channel.")
 			return
 		}
-		prepareDataChannel(dc)
+		prepareDataChannel(dc, onMessage)
 	}
 }
 
@@ -273,7 +269,6 @@ func main() {
 		log.Fatal("Failed to use file descriptor 3 for TUN")
 	}
 
-	wait := make(chan int, 1)
 	log.Println("=== go-webrtc chat demo ===")
 	log.Println("What is your username?")
 	username, _ = reader.ReadString('\n')
@@ -297,27 +292,81 @@ func main() {
 		os.Exit(1)
 	}()
 
-	// Input loop.
+	// Inputs
+	onMessage := make(chan []byte)
+	stdinData := make(chan string)
+	tunData := make(chan []byte)
+	tunError := make(chan error)
+
+	// Start a goroutine to read from our net connection
+	go func(ch chan []byte, eCh chan error) {
+		for {
+			// Buffer of 2 ^ 16. 2 ^ 15 is max IPv6 packet size.
+			data := make([]byte, (2 << 16))
+			length, err := tun.Read(data)
+			if err != nil {
+				tunError <- err
+				return
+			}
+			send := make([]byte, length)
+			n := copy(send, data)
+			if n != length {
+				log.Println("Copy != length", n, length)
+			}
+			tunData <- send
+		}
+	}(tunData, tunError)
+
+	// STDIN loop
+	go func() {
+		for {
+			text, err := reader.ReadString('\n')
+			if err != nil {
+				log.Fatal(err)
+			}
+			stdinData <- text
+		}
+	}()
+
+	// continuously read from the connection
 	for {
-		text, _ := reader.ReadString('\n')
-		switch mode {
-		case ModeInit:
-			if strings.HasPrefix(text, "start") {
-				start(true)
-			} else {
-				signalReceive(text)
+		select {
+		// STDIN
+		case text := <-stdinData:
+			switch mode {
+			case ModeInit:
+				if strings.HasPrefix(text, "start") {
+					start(true, onMessage)
+				} else {
+					signalReceive(text, onMessage)
+				}
+			case ModeConnect:
+				signalReceive(text, onMessage)
+			case ModeChat:
+				// TODO: make chat interface nicer.
+				if !parseCommands(text) {
+					sendChat(text)
+				}
+				// log.Print(username + ": ")
+				break
 			}
-		case ModeConnect:
-			signalReceive(text)
-		case ModeChat:
-			// TODO: make chat interface nicer.
-			if !parseCommands(text) {
-				sendChat(text)
+			break
+		// Peer data
+		case data := <-onMessage:
+			tun.Write(data)
+			break
+		// TUN data
+		case data := <-tunData:
+			if nil != dc {
+				dc.Send(data)
 			}
-			// log.Print(username + ": ")
+			break
+		// TUN errors
+		case err := <-tunError:
+			log.Fatal(err)
+			break
+		default:
 			break
 		}
 	}
-	<-wait
-	log.Println("done")
 }
