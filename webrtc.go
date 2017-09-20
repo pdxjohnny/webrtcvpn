@@ -96,7 +96,7 @@ func signalSend(msg string) {
 	err = ioutil.WriteFile(
 		path.Join(u.HomeDir, "."+PKG_NAME+"-send-to-peer"),
 		[]byte(msg),
-		0400,
+		0600,
 	)
 	if err != nil {
 		log.Fatal(err)
